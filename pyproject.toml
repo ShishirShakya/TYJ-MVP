@@ -16,7 +16,7 @@ dependencies = [
     # Environment variables
     "python-dotenv>=1.2.1",
     # UI framework (for Hugging Face Spaces deployment)
-    "gradio>=5.22.0,<6.0.0", # Pin to major version 5.x to prevent breaking changes
+    "gradio>=5.22.0,<7.0.0", # Pin to major version 5.x to prevent breaking changes
     # Audio processing (mandatory - for voiceprint, stylometry)
     "librosa>=0.10.0",
     "mutagen>=1.47.0",

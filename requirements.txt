@@ -43,7 +43,7 @@ pdfplumber>=0.11.0
 structlog>=24.1.0
 
 # UI framework (for Hugging Face Spaces deployment)
-gradio>=5.22.0,<6.0.0  # Pin to major version 5.x to prevent breaking changes
+gradio>=5.22.0,<7.0.0  # Pin to major version 5.x to prevent breaking changes
 
 # Phase 4.1: Load Testing
 locust>=2.17.0
