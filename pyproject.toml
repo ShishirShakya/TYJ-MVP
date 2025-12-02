@@ -1,0 +1,102 @@
+[project]
+name = "aaa"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    # FastAPI and server (for app/main.py)
+    "fastapi>=0.104.1",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "python-multipart>=0.0.6",
+    # HTTP client
+    "requests>=2.31.0",
+    # Security and cryptography
+    "cryptography>=41.0.0",
+    # Environment variables
+    "python-dotenv>=1.2.1",
+    # UI framework (for Hugging Face Spaces deployment)
+    "gradio>=5.22.0,<6.0.0", # Pin to major version 5.x to prevent breaking changes
+    # Audio processing (mandatory - for voiceprint, stylometry)
+    "librosa>=0.10.0",
+    "mutagen>=1.47.0",
+    # Proctoring (mandatory - for face detection, gaze analysis)
+    "mediapipe>=0.10.0",
+    # Numerical computing (required by librosa/mediapipe)
+    "numpy>=1.26.0",
+    # AI/LLM (for question generation, grading, transcription)
+    "openai>=1.68.2",
+    # Data processing
+    "pandas>=2.0.0",
+    # PDF processing
+    "pdfplumber>=0.11.0",
+    # Logging
+    "structlog>=24.1.0",
+    # Windows file security (optional but recommended on Windows)
+    "pywin32>=311; sys_platform == 'win32'",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+    "jupyter>=1.0.0",
+    "ipywidgets>=8.1.0",
+    "markdown>=3.10",
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "hypothesis>=6.92.0",  # Property-based testing
+    "xhtml2pdf>=0.2.17",
+    # HTTP client for load testing (scripts/load_test.py)
+    "httpx>=0.25.2",
+    # Code quality tools (required by CI)
+    "ruff>=0.1.9",  # Linting and formatting
+    "mypy>=1.8.0",  # Type checking
+    "bandit>=1.7.5",  # Security linting
+    "safety>=2.3.5",  # Dependency vulnerability scanning
+    "pre-commit>=3.5.0",  # Pre-commit hooks
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "slow: Slow running tests",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # do not perform function calls in argument defaults
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+show_error_codes = true

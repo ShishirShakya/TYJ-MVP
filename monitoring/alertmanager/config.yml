@@ -1,0 +1,63 @@
+# Alertmanager configuration for VivaAI Assessment System
+# Phase 4.2: Monitoring & Alerting
+
+global:
+  resolve_timeout: 5m
+  # Slack webhook URL (set via environment variable)
+  slack_api_url: '${SLACK_WEBHOOK_URL}'
+
+# The root route
+route:
+  receiver: 'default'
+  group_by: ['alertname', 'cluster', 'service']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 12h
+  routes:
+    # Critical alerts
+    - match:
+        severity: critical
+      receiver: 'critical-alerts'
+      continue: true
+    
+    # Warning alerts
+    - match:
+        severity: warning
+      receiver: 'warning-alerts'
+
+# Receivers
+receivers:
+  - name: 'default'
+    webhook_configs:
+      - url: 'http://webhook:5000/alerts'
+        send_resolved: true
+
+  - name: 'critical-alerts'
+    slack_configs:
+      - channel: '#vivaai-alerts-critical'
+        title: '🚨 Critical Alert: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        send_resolved: true
+    email_configs:
+      - to: 'ops-team@example.com'
+        from: 'alerts@vivaai.example.com'
+        headers:
+          Subject: 'Critical Alert: {{ .GroupLabels.alertname }}'
+        html: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+
+  - name: 'warning-alerts'
+    slack_configs:
+      - channel: '#vivaai-alerts-warning'
+        title: '⚠️ Warning: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        send_resolved: true
+
+# Inhibition rules
+inhibit_rules:
+  # Inhibit warning if critical alert is firing
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'cluster', 'service']
+

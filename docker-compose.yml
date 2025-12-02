@@ -1,0 +1,77 @@
+# Phase 3.3: Docker Compose for local development and testing
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: vivaai-api
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - VIVA_HMAC_SECRET=${VIVA_HMAC_SECRET:-change-me-in-production-min-32-chars}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - API_KEY=${API_KEY:-dev-api-key}
+      - EXAM_STATE_DIR=/app/exam_state
+    volumes:
+      - ./exam_state:/app/exam_state
+      - ./ferpa_audit_logs:/app/ferpa_audit_logs
+      - ./.env:/app/.env:ro
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  exam:
+    build: .
+    container_name: vivaai-exam
+    ports:
+      - "7860:7860"
+    environment:
+      - ENVIRONMENT=development
+      - VIVA_HMAC_SECRET=${VIVA_HMAC_SECRET:-change-me-in-production-min-32-chars}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - API_BASE_URL=http://api:8000
+      - API_KEY=${API_KEY:-dev-api-key}
+      - PORT=7860
+    volumes:
+      - ./exam_state:/app/exam_state
+      - ./.env:/app/.env:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    command: python exam.py
+
+  prof:
+    build: .
+    container_name: vivaai-prof
+    ports:
+      - "7861:7861"
+    environment:
+      - ENVIRONMENT=development
+      - VIVA_HMAC_SECRET=${VIVA_HMAC_SECRET:-change-me-in-production-min-32-chars}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - PORT=7861
+    volumes:
+      - ./.env:/app/.env:ro
+    command: python prof.py
+
+  dash:
+    build: .
+    container_name: vivaai-dash
+    ports:
+      - "7862:7862"
+    environment:
+      - ENVIRONMENT=development
+      - VIVA_HMAC_SECRET=${VIVA_HMAC_SECRET:-change-me-in-production-min-32-chars}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - PORT=7862
+    volumes:
+      - ./exam_state:/app/exam_state
+      - ./ferpa_audit_logs:/app/ferpa_audit_logs
+      - ./.env:/app/.env:ro
+    command: python dash.py
+

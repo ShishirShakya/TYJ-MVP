@@ -1,0 +1,46 @@
+# Prometheus configuration for VivaAI Assessment System
+# Phase 4.2: Monitoring & Alerting
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'vivaai-production'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - 'alertmanager:9093'
+
+# Load rules once and periodically evaluate them
+rule_files:
+  - 'alerts.yml'
+
+# Scrape configurations
+scrape_configs:
+  # VivaAI API Server
+  - job_name: 'vivaai-api'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['api:8000']
+        labels:
+          service: 'api'
+          component: 'backend'
+
+  # VivaAI Exam Interface
+  - job_name: 'vivaai-exam'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['exam:7860']
+        labels:
+          service: 'exam'
+          component: 'frontend'
+
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
