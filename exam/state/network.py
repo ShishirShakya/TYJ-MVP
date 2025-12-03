@@ -65,10 +65,17 @@ def check_network_status(endpoints: Optional[list] = None) -> bool:
     
     # Try each endpoint in order
     for host, port in endpoints:
+        sock = None
         try:
-            socket.create_connection((host, port), timeout=NETWORK_CHECK_TIMEOUT_SEC)
+            sock = socket.create_connection((host, port), timeout=NETWORK_CHECK_TIMEOUT_SEC)
+            sock.close()  # Close socket immediately after successful connection check
             return True
         except (socket.error, OSError):
+            if sock:
+                try:
+                    sock.close()
+                except:
+                    pass  # Ignore errors when closing failed socket
             continue
     
     return False

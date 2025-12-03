@@ -683,6 +683,24 @@ class ExamAPIClient:
             Dictionary with circuit breaker statistics
         """
         return self.circuit_breaker.get_stats()
+    
+    def close(self) -> None:
+        """
+        Close the HTTP session and clean up resources.
+        
+        This should be called when the client is no longer needed to prevent
+        connection leaks and resource exhaustion.
+        """
+        if hasattr(self, 'session') and self.session:
+            self.session.close()
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures cleanup."""
+        self.close()
 
 
 def get_api_client() -> Optional[ExamAPIClient]:
