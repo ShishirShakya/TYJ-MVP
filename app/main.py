@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, HTTPException, Header, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import structlog
@@ -533,6 +534,10 @@ app.add_middleware(
     allow_headers=["X-API-Key", "Content-Type", "Authorization", "Accept", "X-API-Version"],
     max_age=3600
 )
+
+# PERFORMANCE: Response compression for faster network transfer (spd.txt #7, cp.txt #9)
+# Compress responses > 1KB to reduce bandwidth and improve perceived performance
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 # OBSERVABILITY: Request ID middleware for correlation (Principle #13)

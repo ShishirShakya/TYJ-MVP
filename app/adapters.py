@@ -13,7 +13,12 @@ and the exam flow layer, allowing both to evolve independently (Principle #26).
 
 import os
 import json
+import time
+import asyncio
 from typing import Dict, Any, Optional, Tuple
+
+import aiofiles
+
 from openai import OpenAI
 
 from exam.state.core import ensure_state
@@ -26,10 +31,19 @@ from shared.logging_config import get_logger
 
 logger = get_logger()
 
+# PERFORMANCE: In-memory state cache to reduce disk I/O (spd.txt #16, cp.txt #9)
+# Cache state with TTL to avoid redundant deserialization while maintaining freshness
+_state_cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
+_cache_lock = asyncio.Lock()  # Async-safe access (cp.txt #20, spd.txt #2)
+_CACHE_TTL = 30.0  # Cache for 30 seconds (spd.txt #16)
 
-def load_state_from_session_id(session_id: str) -> Optional[Dict[str, Any]]:
+
+async def load_state_from_session_id(session_id: str) -> Optional[Dict[str, Any]]:
     """
-    Load state dictionary from session_id.
+    Load state dictionary from session_id with in-memory caching (async).
+    
+    PERFORMANCE: Uses async file I/O and in-memory cache with TTL to reduce disk I/O (spd.txt #16, #2).
+    Async-safe cache access (cp.txt #20, spd.txt #2).
     
     Args:
         session_id: Session identifier
@@ -37,15 +51,33 @@ def load_state_from_session_id(session_id: str) -> Optional[Dict[str, Any]]:
     Returns:
         State dictionary if found, None otherwise
     """
+    # Check cache first (async-safe)
+    async with _cache_lock:
+        if session_id in _state_cache:
+            state, timestamp = _state_cache[session_id]
+            if time.time() - timestamp < _CACHE_TTL:
+                return state
+            # Cache expired, remove it
+            del _state_cache[session_id]
+    
+    # Load from disk using async I/O (spd.txt #2, #9)
     try:
         state = {"session_id": session_id}
         paths = _paths_for_session(state)
         
-        if not os.path.exists(paths["STATE_PATH"]):
+        # Check file existence using async (non-blocking)
+        file_exists = await asyncio.to_thread(os.path.exists, paths["STATE_PATH"])
+        if not file_exists:
             return None
         
-        with open(paths["STATE_PATH"], "r", encoding="utf-8") as f:
-            state = json.load(f)
+        # Read file asynchronously
+        async with aiofiles.open(paths["STATE_PATH"], "r", encoding="utf-8") as f:
+            content = await f.read()
+            state = json.loads(content)
+        
+        # Update cache (async-safe)
+        async with _cache_lock:
+            _state_cache[session_id] = (state, time.time())
         
         return state
     except Exception as e:
@@ -56,6 +88,19 @@ def load_state_from_session_id(session_id: str) -> Optional[Dict[str, Any]]:
             error_message=str(e)[:200]
         )
         return None
+
+
+def invalidate_state_cache(session_id: str) -> None:
+    """
+    Invalidate cached state for a session.
+    
+    Call this when state is modified externally to ensure cache consistency.
+    
+    Args:
+        session_id: Session identifier to invalidate
+    """
+    with _cache_lock:
+        _state_cache.pop(session_id, None)
 
 
 def build_flow_dependencies(client: OpenAI) -> Dict[str, Any]:

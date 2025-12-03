@@ -11,6 +11,9 @@ pydantic-settings>=2.1.0
 requests>=2.31.0
 httpx>=0.25.2
 
+# Async file I/O
+aiofiles>=24.1.0
+
 # Environment variables
 python-dotenv>=1.2.1
 

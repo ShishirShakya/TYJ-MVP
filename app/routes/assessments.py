@@ -11,9 +11,11 @@ This module provides all assessment-related endpoints:
 """
 
 import os
+import asyncio
 import tempfile
 import shutil
 import base64
+import time
 from typing import Dict, Any
 from fastapi import Request, APIRouter, Depends, UploadFile, File, Form
 from fastapi.responses import JSONResponse
@@ -35,9 +37,10 @@ from app.adapters import (
     build_flow_dependencies,
     call_ask_main_question,
     call_grade_current_block,
-    call_handle_mic
+    call_handle_mic,
+    invalidate_state_cache
 )
-from app.dependencies import get_openai_client
+from app.dependencies import get_openai_client, get_openai_client_sync
 from app.auth import require_auth
 from shared.logging_config import get_logger
 from shared.constants import MAX_REQUEST_BODY_SIZE
@@ -79,9 +82,15 @@ async def generate_question(
     request_id = getattr(request.state, "request_id", "unknown")
     openai_client = get_openai_client()
     
+    # PERFORMANCE: Track timing for observability (spd.txt #12, cp.txt #13)
+    timings = {}
+    
     try:
-        # Load state from session_id
-        state = load_state_from_session_id(req.session_id)
+        # Time state load
+        start = time.perf_counter()
+        state = await load_state_from_session_id(req.session_id)
+        timings["state_load_ms"] = (time.perf_counter() - start) * 1000
+        
         if state is None:
             # Create new state if not found
             from exam.state.core import ensure_state
@@ -89,25 +98,48 @@ async def generate_question(
             state["course_id"] = req.course_id
             state["exam_id"] = req.exam_id
         
-        # Build dependencies
-        dependencies = build_flow_dependencies(openai_client)
+        # Build dependencies (use sync client for exam flow)
+        sync_client = get_openai_client_sync()
+        dependencies = build_flow_dependencies(sync_client)
         
-        # Call question generation
-        updated_state, question_text, question_id = call_ask_main_question(
+        # PERFORMANCE: Run synchronous exam flow in thread pool to avoid blocking (spd.txt #2)
+        # Time question generation
+        start = time.perf_counter()
+        updated_state, question_text, question_id = await asyncio.to_thread(
+            call_ask_main_question,
             state=state,
-            client=openai_client,
+            client=sync_client,
             dependencies=dependencies
         )
+        timings["question_gen_ms"] = (time.perf_counter() - start) * 1000
         
-        # Save updated state
+        # PERFORMANCE: Defer state persistence to background (spd.txt #3, cp.txt #9)
+        # Save state in background to avoid blocking response
         from exam.state.persistence import save_state_to_disk
-        save_state_to_disk(updated_state)
+        
+        async def save_state_background():
+            """Background task to save state and invalidate cache."""
+            try:
+                save_state_to_disk(updated_state)
+                invalidate_state_cache(req.session_id)  # Invalidate cache after save
+            except Exception as e:
+                logger.error(
+                    "background_state_save_failed",
+                    request_id=request_id,
+                    session_id=req.session_id,
+                    error_type=type(e).__name__,
+                    error_message=str(e)[:200]
+                )
+        
+        # Schedule background save (don't await - fire and forget)
+        asyncio.create_task(save_state_background())
         
         logger.info(
             "generate_question_success",
             request_id=request_id,
             session_id=req.session_id,
-            question_id=question_id
+            question_id=question_id,
+            **{k: round(v, 2) for k, v in timings.items()}
         )
         
         return GenerateQuestionResponse(
@@ -152,9 +184,15 @@ async def grade_answer(
     request_id = getattr(request.state, "request_id", "unknown")
     openai_client = get_openai_client()
     
+    # PERFORMANCE: Track timing for observability (spd.txt #12, cp.txt #13)
+    timings = {}
+    
     try:
-        # Load state from session_id
-        state = load_state_from_session_id(req.session_id)
+        # Time state load
+        start = time.perf_counter()
+        state = await load_state_from_session_id(req.session_id)
+        timings["state_load_ms"] = (time.perf_counter() - start) * 1000
+        
         if state is None:
             return JSONResponse(
                 status_code=404,
@@ -172,26 +210,48 @@ async def grade_answer(
                 PERSIST_OK=PERSIST_OK
             )
         
-        # Build dependencies
-        dependencies = build_flow_dependencies(openai_client)
+        # Build dependencies (use sync client for exam flow)
+        sync_client = get_openai_client_sync()
+        dependencies = build_flow_dependencies(sync_client)
         
-        # Call grading
-        updated_state, grading_result = call_grade_current_block(
+        # PERFORMANCE: Run synchronous exam flow in thread pool to avoid blocking (spd.txt #2)
+        # Time grading
+        start = time.perf_counter()
+        updated_state, grading_result = await asyncio.to_thread(
+            call_grade_current_block,
             state=state,
-            client=openai_client,
+            client=sync_client,
             dependencies=dependencies
         )
+        timings["grading_ms"] = (time.perf_counter() - start) * 1000
         
-        # Save updated state
+        # PERFORMANCE: Defer state persistence to background (spd.txt #3, cp.txt #9)
         from exam.state.persistence import save_state_to_disk
-        save_state_to_disk(updated_state)
+        
+        async def save_state_background():
+            """Background task to save state and invalidate cache."""
+            try:
+                save_state_to_disk(updated_state)
+                invalidate_state_cache(req.session_id)
+            except Exception as e:
+                logger.error(
+                    "background_state_save_failed",
+                    request_id=request_id,
+                    session_id=req.session_id,
+                    error_type=type(e).__name__,
+                    error_message=str(e)[:200]
+                )
+        
+        # Schedule background save (don't await - fire and forget)
+        asyncio.create_task(save_state_background())
         
         logger.info(
             "grade_answer_success",
             request_id=request_id,
             session_id=req.session_id,
             question_id=req.question_id,
-            score=grading_result["score"]
+            score=grading_result["score"],
+            **{k: round(v, 2) for k, v in timings.items()}
         )
         
         return GradeAnswerResponse(**grading_result)
@@ -246,9 +306,15 @@ async def process_audio(
             content={"detail": f"File too large. Maximum size: {MAX_REQUEST_BODY_SIZE} bytes"}
         )
     
+    # PERFORMANCE: Track timing for observability (spd.txt #12, cp.txt #13)
+    timings = {}
+    
     try:
-        # Load state from session_id
-        state = load_state_from_session_id(session_id)
+        # Time state load
+        start = time.perf_counter()
+        state = await load_state_from_session_id(session_id)
+        timings["state_load_ms"] = (time.perf_counter() - start) * 1000
+        
         if state is None:
             return JSONResponse(
                 status_code=404,
@@ -262,27 +328,49 @@ async def process_audio(
                 shutil.copyfileobj(audio_file.file, tmp_file)
                 temp_audio_path = tmp_file.name
             
-            # Build dependencies
-            dependencies = build_flow_dependencies(openai_client)
+            # Build dependencies (use sync client for exam flow)
+            sync_client = get_openai_client_sync()
+            dependencies = build_flow_dependencies(sync_client)
             
-            # Call audio processing
-            updated_state, transcript, features = call_handle_mic(
+            # PERFORMANCE: Run synchronous exam flow in thread pool to avoid blocking (spd.txt #2)
+            # Time audio processing
+            start = time.perf_counter()
+            updated_state, transcript, features = await asyncio.to_thread(
+                call_handle_mic,
                 state=state,
                 audio_path=temp_audio_path,
-                client=openai_client,
+                client=sync_client,
                 dependencies=dependencies
             )
+            timings["audio_processing_ms"] = (time.perf_counter() - start) * 1000
             
-            # Save updated state
+            # PERFORMANCE: Defer state persistence to background (spd.txt #3, cp.txt #9)
             from exam.state.persistence import save_state_to_disk
-            save_state_to_disk(updated_state)
+            
+            async def save_state_background():
+                """Background task to save state and invalidate cache."""
+                try:
+                    save_state_to_disk(updated_state)
+                    invalidate_state_cache(session_id)
+                except Exception as e:
+                    logger.error(
+                        "background_state_save_failed",
+                        request_id=request_id,
+                        session_id=session_id,
+                        error_type=type(e).__name__,
+                        error_message=str(e)[:200]
+                    )
+            
+            # Schedule background save (don't await - fire and forget)
+            asyncio.create_task(save_state_background())
             
             logger.info(
                 "process_audio_success",
                 request_id=request_id,
                 session_id=session_id,
                 transcript_length=len(transcript),
-                temp_audio_path=temp_audio_path
+                temp_audio_path=temp_audio_path,
+                **{k: round(v, 2) for k, v in timings.items()}
             )
             
             return ProcessAudioResponse(
@@ -354,7 +442,7 @@ async def analyze_proctor(
     
     try:
         # Load state from session_id
-        state = load_state_from_session_id(req.session_id)
+        state = await load_state_from_session_id(req.session_id)
         if state is None:
             return JSONResponse(
                 status_code=404,
@@ -710,15 +798,15 @@ async def grade_answer_direct(
     
     try:
         from exam.ai.grader import _parse_feedback, _calculate_overall_score
-        from exam.utils import with_retry
+        from app.utils_async import with_retry_async
         from shared.circuit_breaker import get_default_circuit_breaker_manager
         
         # Get circuit breaker
         circuit_breaker_manager = get_default_circuit_breaker_manager()
         circuit_breaker = circuit_breaker_manager.get_breaker("openai_chat") if circuit_breaker_manager else None
         
-        # Call OpenAI API
-        comp = with_retry(
+        # PERFORMANCE: Use async API call with async retry (spd.txt #17, #2)
+        comp = await with_retry_async(
             openai_client.chat.completions.create,
             circuit_breaker=circuit_breaker,
             service_name="openai_chat",
@@ -818,8 +906,10 @@ async def generate_tts(
         # Truncate text
         text_truncated = req.text[:4096]
         
-        # Generate TTS audio
-        resp = with_retry(
+        # PERFORMANCE: Use async API call with async retry (spd.txt #17, #2)
+        from app.utils_async import with_retry_async
+        
+        resp = await with_retry_async(
             openai_client.audio.speech.create,
             circuit_breaker=circuit_breaker,
             service_name="openai_audio",
