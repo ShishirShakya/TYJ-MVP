@@ -755,6 +755,35 @@ def grade_current_block(
                 "question_text": next_q,           # Store question text for better duplicate detection
             })
             
+            # ORDERING FIX: Replace processing message with feedback BEFORE adding next question
+            # This ensures feedback appears before the next question in the UI (per fix-assessment.md)
+            # Defensive check: ensure history is a list
+            if not isinstance(s.get("history"), list):
+                s["history"] = []
+            
+            # Find and replace the processing message FIRST (before adding next question)
+            replaced = False
+            for i in range(len(s["history"]) - 1, -1, -1):
+                if isinstance(s["history"][i], dict):
+                    content = s["history"][i].get("content", "")
+                    if PROCESSING_ASSESSMENT_MSG in content or PROCESSING_FOLLOWUP_MSG in content:
+                        s["history"][i] = {"role":"assistant","content":feedback_summary}
+                        replaced = True
+                        break  # Only replace first occurrence
+            
+            # FALLBACK: If no replacement happened, ensure feedback_summary is in history
+            # This prevents raw fb_raw from being displayed
+            if not replaced:
+                # Find last assistant message and replace it, or append if none found
+                for i in range(len(s["history"]) - 1, -1, -1):
+                    if isinstance(s["history"][i], dict) and s["history"][i].get("role") == "assistant":
+                        s["history"][i] = {"role":"assistant","content":feedback_summary}
+                        break
+                else:
+                    # No assistant message found, append feedback_summary
+                    s["history"].append({"role":"assistant","content":feedback_summary})
+            
+            # NOW add next question (after feedback is in place)
             # Add visual distinction for main questions with numbering
             asked_main = s.get("asked_main", 0)
             limit = s.get("limit", 0)
@@ -764,12 +793,19 @@ def grade_current_block(
             else:
                 next_q_with_label = next_q
             
+            # Add transition message before next question
+            s["history"].append({"role":"assistant","content":TRANSITION_NEXT_QUESTION})
+            
+            # Add next question
             s["history"].append({"role":"assistant","content":next_q_with_label})
             s["phase"] = "awaiting_main_answer"
+            
             # Notify student about answer timeout (use helper function with state for cross-context reliability)
             max_timeout = deps["get_max_answer_timeout_sec"](s)  # Pass state to get value from state dict if context var unavailable
             timeout_notification = f"\n\n{format_timeout_notification(max_timeout, is_followup=False)}"
             s["history"].append({"role":"assistant","content":timeout_notification})
+            
+            # Generate TTS audio (includes feedback + transition + question)
             speak = f"{feedback_summary}\n\n{TRANSITION_NEXT_QUESTION}\n{next_q}"
             if progress:
                 progress(0.7)
@@ -794,31 +830,6 @@ def grade_current_block(
                 }
             # DETERMINISTIC: Use time_provider instead of time.time() (Principle #5)
             s["current"]["q_time"] = time_provider.time() + audio_duration
-            # Replace processing message with feedback summary (after TTS is generated)
-            # This ensures progress bar shows during entire assessment + TTS generation
-            # Handles both assessment and follow-up messages
-            # SECURITY FIX: More robust replacement - find and replace ALL instances, not just first
-            if not isinstance(s.get("history"), list):
-                s["history"] = []
-            # Find and replace the processing message (might be earlier in history due to question/timeout messages)
-            replaced = False
-            for i in range(len(s["history"]) - 1, -1, -1):
-                if isinstance(s["history"][i], dict):
-                    content = s["history"][i].get("content", "")
-                    if PROCESSING_ASSESSMENT_MSG in content or PROCESSING_FOLLOWUP_MSG in content:
-                        s["history"][i] = {"role":"assistant","content":feedback_summary}
-                        replaced = True
-            # FALLBACK: If no replacement happened, ensure feedback_summary is in history
-            # This prevents raw fb_raw from being displayed
-            if not replaced:
-                # Find last assistant message and replace it, or append if none found
-                for i in range(len(s["history"]) - 1, -1, -1):
-                    if isinstance(s["history"][i], dict) and s["history"][i].get("role") == "assistant":
-                        s["history"][i] = {"role":"assistant","content":feedback_summary}
-                        break
-                else:
-                    # No assistant message found, append feedback_summary
-                    s["history"].append({"role":"assistant","content":feedback_summary})
             # Mic should only be enabled when timer countdown starts (elapsed >= 0)
             # Since timer starts after audio finishes, mic will be disabled until then
             from exam.ui.helpers import _calculate_mic_interactive_state

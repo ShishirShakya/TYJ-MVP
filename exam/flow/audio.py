@@ -583,14 +583,19 @@ def handle_mic(
         # Keep processing message active until grading starts
         # This ensures progress bar stays visible between transcription and assessment generation
         # The message will be replaced by grading.py when assessment is ready
-        # Use context-aware message: check if follow-up is likely coming
-        # Note: target_followups might not be set yet, so we use default assessment message
-        # The message will be updated to follow-up message if needed before ask_followup_question is called
-        # Add progress context to message for better user clarity
+        # ORDERING FIX: Check if this is a follow-up answer to use correct message type
+        # Determine if this is a follow-up or main answer
+        is_followup = (
+            s.get("current", {}).get("followups_done", 0) > 0 or
+            s.get("phase") == "awaiting_followup_answer"
+        )
+        
+        # Use appropriate message based on answer type
+        processing_msg = PROCESSING_FOLLOWUP_MSG if is_followup else PROCESSING_ASSESSMENT_MSG
         msg_with_context = format_processing_message_with_context(
-            PROCESSING_ASSESSMENT_MSG,
+            processing_msg,
             s,
-            include_followup_info=False
+            include_followup_info=is_followup
         )
         s["history"].append({"role": "assistant", "content": msg_with_context})
         

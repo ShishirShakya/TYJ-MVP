@@ -3,6 +3,7 @@ ProctorState class for managing video proctoring state.
 """
 
 import hashlib
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -66,13 +67,22 @@ class ProctorState:
         self.break_duration = 0.0
         self.last_feedback_warning = None
         self.feedback_warning_time = None
+        
+        # Frame skipping for CPU optimization (per spd.txt - proctoring optimization)
+        self._frame_skip_counter = 0
+        self._frame_skip_interval = int(os.getenv("PROCTOR_FRAME_SKIP_INTERVAL", "2"))  # Process every 2nd frame by default
 
     def start(self, has_proctor: bool, mp=None):
         """Initialize MediaPipe face mesh if available."""
         if has_proctor and self._mesh is None and mp is not None:
+            # OPTIMIZATION: Reduce CPU usage while maintaining detection quality
+            # refine_landmarks=False saves ~20-30% CPU, higher confidence thresholds reduce false positives
             self._mesh = mp.solutions.face_mesh.FaceMesh(
-                max_num_faces=2, refine_landmarks=True,
-                min_detection_confidence=0.5, min_tracking_confidence=0.5
+                max_num_faces=2,  # Keep 2 for multi-face detection (security requirement)
+                refine_landmarks=False,  # Disable refinement (major CPU savings)
+                min_detection_confidence=0.6,  # Slightly higher = fewer false positives
+                min_tracking_confidence=0.6,   # Higher = use tracking more, detection less
+                static_image_mode=False  # Enable tracking mode (faster)
             )
         self.enabled = has_proctor
 

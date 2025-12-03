@@ -42,8 +42,23 @@ def proctor_analyze_frame(frame: Any, st: ProctorState, has_proctor: bool = True
         st.last_status = "no_frame"
         return st.summary_global(), st
 
-    res = st._mesh.process(img)
+    # CRITICAL: Always increment frame counter for accurate statistics (maintains backward compatibility)
     st.frames += 1
+    
+    # Frame skipping logic for CPU optimization (per spd.txt - proctoring optimization)
+    # Skip MediaPipe processing on some frames but maintain accurate frame statistics
+    frame_skip_interval = getattr(st, '_frame_skip_interval', 2)
+    if not hasattr(st, '_frame_skip_counter'):
+        st._frame_skip_counter = 0
+    st._frame_skip_counter += 1
+    
+    # Skip MediaPipe processing but maintain frame statistics
+    if st._frame_skip_counter % frame_skip_interval != 0:
+        # Return current state without processing (maintains accurate frame count)
+        return st.summary_global(), st
+    
+    # Process frame (only every Nth frame)
+    res = st._mesh.process(img)
     faces = getattr(res, "multi_face_landmarks", None) or []
     n_faces = len(faces)
 
