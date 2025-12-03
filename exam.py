@@ -1752,5 +1752,6 @@ if __name__ == "__main__":
         share=False,
         show_error=True,
         max_threads=64,
-        allowed_paths=allowed_paths
+        allowed_paths=allowed_paths,
+        pwa=True
     )

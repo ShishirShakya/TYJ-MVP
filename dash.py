@@ -636,6 +636,7 @@ if __name__ == "__main__":
         server_port=port,
         share=False,
         show_error=True,
+        pwa=True,
         # File upload configuration for Railway
         # Note: In Gradio 5.x, file uploads are handled automatically
         # If you see 502 errors on /gradio_api/upload, it may be due to:
