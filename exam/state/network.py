@@ -18,7 +18,8 @@ from shared.time_provider import get_default_time_provider
 
 
 # Constants
-NETWORK_CHECK_INTERVAL_SEC = 5  # Check network every 5 seconds
+NETWORK_CHECK_INTERVAL_SEC = 15  # Check network every 15 seconds (reduced frequency to reduce false positives)
+NETWORK_CHECK_TIMEOUT_SEC = 5  # Socket timeout in seconds (increased from 3 to reduce false positives)
 
 # PORTABILITY: Configurable network check endpoints with defaults (Principle #6)
 # Can be overridden via environment variable for restricted networks
@@ -65,7 +66,7 @@ def check_network_status(endpoints: Optional[list] = None) -> bool:
     # Try each endpoint in order
     for host, port in endpoints:
         try:
-            socket.create_connection((host, port), timeout=3)
+            socket.create_connection((host, port), timeout=NETWORK_CHECK_TIMEOUT_SEC)
             return True
         except (socket.error, OSError):
             continue

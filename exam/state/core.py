@@ -200,7 +200,9 @@ def ensure_state(
     s.setdefault("network_status", "online")  # Track network status: "online", "offline", "checking"
     s.setdefault("last_network_check", 0)  # Track last network check timestamp
     s.setdefault("queued_answers", [])  # Queue answers when offline
-    s.setdefault("network_check_interval", 5)  # Check network every 5 seconds
+    # SSOT: Use constant from network module (Principle #2)
+    from exam.state.network import NETWORK_CHECK_INTERVAL_SEC
+    s.setdefault("network_check_interval", NETWORK_CHECK_INTERVAL_SEC)
     s.setdefault("ready_for_question", False)  # armed on consent; first mic press plays question
     
     s.setdefault("current", {

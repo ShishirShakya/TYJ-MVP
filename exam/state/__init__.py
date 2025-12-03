@@ -22,6 +22,7 @@ from .network import (
     queue_answer_locally,
     process_queued_answers,
     NETWORK_CHECK_INTERVAL_SEC,
+    NETWORK_CHECK_TIMEOUT_SEC,
 )
 from .validation import (
     validate_state_invariants,
@@ -49,6 +50,7 @@ __all__ = [
     "queue_answer_locally",
     "process_queued_answers",
     "NETWORK_CHECK_INTERVAL_SEC",
+    "NETWORK_CHECK_TIMEOUT_SEC",
     # Validation (Principle #22)
     "validate_state_invariants",
     "validate_state_before_persistence",
