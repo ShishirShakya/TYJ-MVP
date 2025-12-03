@@ -492,6 +492,10 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     
+    # PERFORMANCE: Close HTTP client on shutdown (cp.txt #9, resource management)
+    from app.dependencies import cleanup_dependencies
+    await cleanup_dependencies()
+    
     logger.info("app_shutting_down", message="VivaAI Assessment API shutting down")
 
 

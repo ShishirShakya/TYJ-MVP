@@ -120,7 +120,8 @@ async def generate_question(
         async def save_state_background():
             """Background task to save state and invalidate cache."""
             try:
-                save_state_to_disk(updated_state)
+                # PERFORMANCE: Use batched saves (default) to reduce disk I/O (spd.txt #3)
+                save_state_to_disk(updated_state, use_batch=True)
                 invalidate_state_cache(req.session_id)  # Invalidate cache after save
             except Exception as e:
                 logger.error(
@@ -231,7 +232,7 @@ async def grade_answer(
         async def save_state_background():
             """Background task to save state and invalidate cache."""
             try:
-                save_state_to_disk(updated_state)
+                save_state_to_disk(updated_state, use_batch=True)
                 invalidate_state_cache(req.session_id)
             except Exception as e:
                 logger.error(
@@ -350,7 +351,7 @@ async def process_audio(
             async def save_state_background():
                 """Background task to save state and invalidate cache."""
                 try:
-                    save_state_to_disk(updated_state)
+                    save_state_to_disk(updated_state, use_batch=True)
                     invalidate_state_cache(session_id)
                 except Exception as e:
                     logger.error(
@@ -549,9 +550,9 @@ async def analyze_proctor(
         else:
             confidence = 0.50
         
-        # Save updated state
+        # Save updated state (use batched saves for performance)
         from exam.state.persistence import save_state_to_disk
-        save_state_to_disk(state)
+        save_state_to_disk(state, use_batch=True)
         
         logger.info(
             "analyze_proctor_success",

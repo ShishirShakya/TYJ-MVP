@@ -6,6 +6,7 @@ and circuit breakers, avoiding circular import issues.
 """
 
 from typing import Optional
+import httpx
 from shared.rate_limiting import RateLimiter, RateLimitConfig
 from shared.circuit_breaker import CircuitBreaker, CircuitBreakerConfig
 from openai import AsyncOpenAI, OpenAI
@@ -16,6 +17,7 @@ _rate_limiter: Optional[RateLimiter] = None
 _circuit_breaker: Optional[CircuitBreaker] = None
 _openai_client: Optional[AsyncOpenAI] = None
 _openai_client_sync: Optional[OpenAI] = None  # Sync client for exam flow functions
+_http_client: Optional[httpx.AsyncClient] = None  # Shared HTTP client with connection pooling
 
 
 def initialize_dependencies(
@@ -27,7 +29,7 @@ def initialize_dependencies(
     
     This should be called once during app startup in main.py.
     """
-    global _rate_limiter, _circuit_breaker, _openai_client
+    global _rate_limiter, _circuit_breaker, _openai_client, _openai_client_sync, _http_client
     
     if _rate_limiter is None:
         _rate_limiter = RateLimiter("api", config=rate_limit_config or RateLimitConfig())
@@ -42,9 +44,22 @@ def initialize_dependencies(
             )
         )
     
+    # PERFORMANCE: Create shared HTTP client with connection pooling (spd.txt #7, cp.txt #9)
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(
+            limits=httpx.Limits(
+                max_keepalive_connections=20,  # Reuse up to 20 connections
+                max_connections=100  # Max total connections
+            ),
+            timeout=httpx.Timeout(30.0)  # 30s timeout
+        )
+    
     if _openai_client is None:
-        # PERFORMANCE: Use AsyncOpenAI for non-blocking API calls (spd.txt #17, #2)
-        _openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # PERFORMANCE: Use AsyncOpenAI with shared HTTP client for connection pooling (spd.txt #17, #2, #7)
+        _openai_client = AsyncOpenAI(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            http_client=_http_client  # Use shared client for connection reuse
+        )
     
     if _openai_client_sync is None:
         # Keep sync client for exam flow functions (they're synchronous)
@@ -77,4 +92,16 @@ def get_openai_client_sync() -> OpenAI:
     if _openai_client_sync is None:
         raise RuntimeError("Dependencies not initialized. Call initialize_dependencies() first.")
     return _openai_client_sync
+
+
+async def cleanup_dependencies() -> None:
+    """
+    Cleanup shared dependencies on shutdown.
+    
+    Closes HTTP client and other resources.
+    """
+    global _http_client
+    if _http_client is not None:
+        await _http_client.aclose()
+        _http_client = None
 

@@ -18,7 +18,9 @@ import os
 import json
 import tempfile
 import threading
-from typing import Dict, Any
+import time
+from typing import Dict, Any, Optional
+from collections import deque
 
 # Platform-specific file locking
 try:
@@ -48,6 +50,14 @@ _LOCK_CLEANUP_INTERVAL = 3600  # Clean up locks older than 1 hour
 
 # Constants
 AUTO_SAVE_INTERVAL_SEC = 30  # Auto-save every 30 seconds
+
+# PERFORMANCE: Batched state save queue to reduce disk I/O (spd.txt #3, #7, cp.txt #9)
+# Queue state saves and process them in batches to reduce write operations
+_pending_state_saves: Dict[str, Dict[str, Any]] = {}  # session_id -> state dict
+_save_queue_lock = threading.Lock()
+_save_timer: Optional[threading.Timer] = None
+_BATCH_SAVE_DELAY = 0.5  # Batch saves every 500ms (spd.txt #3)
+_BATCH_SAVE_MAX_SIZE = 10  # Flush queue when it reaches this size
 
 
 def _get_file_lock(path: str) -> threading.Lock:
@@ -246,7 +256,16 @@ def atomic_write_json_secure(obj: Dict[str, Any], path: str) -> None:
     """
     d = os.path.dirname(path) or "."
     os.makedirs(d, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=d, prefix="._viva_state.", suffix=".tmp", text=True)
+    # PERFORMANCE: Use binary mode for orjson optimization (spd.txt #8, cp.txt #9)
+    # Fallback to text mode if orjson not available
+    try:
+        import orjson
+        use_orjson = True
+        fd, tmp = tempfile.mkstemp(dir=d, prefix="._viva_state.", suffix=".tmp", text=False)
+    except ImportError:
+        use_orjson = False
+        fd, tmp = tempfile.mkstemp(dir=d, prefix="._viva_state.", suffix=".tmp", text=True)
+    
     try:
         # Set file permissions (POSIX) or Windows ACLs
         try:
@@ -307,8 +326,20 @@ def atomic_write_json_secure(obj: Dict[str, Any], path: str) -> None:
                     action="failing_hard"
                 )
                 raise RuntimeError(error_msg)
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-            json.dump(obj, f, ensure_ascii=False, indent=2)
+        # PERFORMANCE: Use orjson for faster serialization (spd.txt #8, cp.txt #9)
+        if use_orjson:
+            # orjson requires binary mode and returns bytes
+            with os.fdopen(fd, "wb") as f:
+                json_bytes = orjson.dumps(obj, option=orjson.OPT_INDENT_2 | orjson.OPT_NON_STR_KEYS)
+                f.write(json_bytes)
+                f.flush()
+                os.fsync(f.fileno())
+        else:
+            # Fallback to standard json for compatibility (text mode)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                json.dump(obj, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
@@ -374,7 +405,74 @@ def atomic_write_json_secure(obj: Dict[str, Any], path: str) -> None:
             )
 
 
-def save_state_to_disk(s: Dict[str, Any], persist_ok: bool = True) -> bool:
+def queue_state_save(s: Dict[str, Any], persist_ok: bool = True) -> bool:
+    """
+    Queue state save for batched processing.
+    
+    PERFORMANCE: Batches state saves to reduce disk I/O (spd.txt #3, #7).
+    Last write wins per session (idempotent - cp.txt #21).
+    
+    Args:
+        s: State dictionary to save
+        persist_ok: Whether persistence is enabled
+        
+    Returns:
+        True if queued successfully, False otherwise
+    """
+    session_id = s.get("session_id")
+    if not session_id:
+        return False
+    
+    # Queue state save (last write wins per session)
+    with _save_queue_lock:
+        _pending_state_saves[session_id] = (s, persist_ok)
+        
+        # Start timer if not running
+        global _save_timer
+        if _save_timer is None or not _save_timer.is_alive():
+            _save_timer = threading.Timer(_BATCH_SAVE_DELAY, _flush_state_saves)
+            _save_timer.start()
+        
+        # Flush immediately if queue is large
+        if len(_pending_state_saves) >= _BATCH_SAVE_MAX_SIZE:
+            _save_timer.cancel()
+            _flush_state_saves()
+    
+    return True
+
+
+def _flush_state_saves() -> None:
+    """
+    Flush all pending state saves to disk.
+    
+    Thread-safe batch processing of queued state saves.
+    """
+    with _save_queue_lock:
+        if not _pending_state_saves:
+            return
+        
+        # Process all pending saves
+        saves_to_process = list(_pending_state_saves.items())
+        _pending_state_saves.clear()
+        global _save_timer
+        _save_timer = None
+    
+    # Process saves outside lock to avoid blocking
+    for session_id, (state, persist_ok) in saves_to_process:
+        try:
+            save_state_to_disk(state, persist_ok=persist_ok)
+        except Exception as e:
+            import structlog
+            logger = structlog.get_logger()
+            logger.error(
+                "batched_state_save_failed",
+                session_id=session_id,
+                error_type=type(e).__name__,
+                error_message=str(e)[:100]
+            )
+
+
+def save_state_to_disk(s: Dict[str, Any], persist_ok: bool = True, use_batch: bool = True) -> bool:
     """
     Save state dictionary to disk with file locking to prevent race conditions.
     
@@ -424,6 +522,23 @@ def save_state_to_disk(s: Dict[str, Any], persist_ok: bool = True) -> bool:
     - Returns False if state validation fails
     - Returns False if file write fails
     - Logs errors internally (does not expose to caller)
+    
+    Args:
+        use_batch: If True, queue save for batched processing (default: True)
+    """
+    # PERFORMANCE: Use batched saves by default (spd.txt #3, #7)
+    if use_batch:
+        return queue_state_save(s, persist_ok=persist_ok)
+    
+    # Direct save (for critical operations that need immediate persistence)
+    return _save_state_to_disk_immediate(s, persist_ok=persist_ok)
+
+
+def _save_state_to_disk_immediate(s: Dict[str, Any], persist_ok: bool = True) -> bool:
+    """
+    Save state immediately (bypasses batching).
+    
+    Used internally by batched saves and for critical operations.
     """
     p = _paths_for_session(s)
     if not persist_ok or os.path.exists(p["TOMBSTONE_PATH"]):
